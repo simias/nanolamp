@@ -1,0 +1,67 @@
+NAME = nanomlamp
+
+SRC = main.c
+
+OBJ = $(SRC:.c=.o)
+DEP = $(SRC:%.c=%.d)
+
+# MCU type
+MCU = atmega4809
+
+# CPU frequency
+F_CPU = 20000000L
+
+# Programmer type
+PROGRAMMER_TYPE = jtag2updi
+
+# Programmer port
+PROGRAMMER_PORT = /dev/ttyACM0
+
+# AVR-GCC Flags
+CFLAGS = -mmcu=$(MCU) -ffunction-sections -fdata-sections -DF_CPU=$(F_CPU) -O2 -MMD -MP -nodevicelib -flto -Wall
+
+PREFIX = /opt/avr8-gnu-toolchain-linux_x86_64/bin/
+
+# Compilation command
+CC = $(PREFIX)avr-gcc
+
+# Build target
+all: $(NAME).hex
+
+# Compile
+%.o: %.c
+	$(info CC $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+# Link
+$(NAME).elf: $(OBJ)
+	$(info LD $@ $^)
+	$(CC) $(CFLAGS) $^ -o $@
+
+-include $(DEP)
+
+# Hex file
+$(NAME).hex: $(NAME).elf
+	$(PREFIX)avr-objcopy -O ihex -R .eeprom $< $@
+
+# Flash to board
+#
+# Arduino Nano Every default fuses:
+#  fuse2/osccfg: 0x01 (16Mhz, set to 0x02 to run at 20Mhz)
+#  fuse5/syscfg0: 0xc9
+#  fuse8/bootend: 0x00
+flash: all
+	$(info FLASH $(NAME))
+	stty -F $(PROGRAMMER_PORT) 1200
+	sleep 1
+	avrdude -p $(MCU) -c $(PROGRAMMER_TYPE) -P $(PROGRAMMER_PORT) -b115200 -e -D -Uflash:w:$(NAME).hex:i -Ufuse2:w:0x02:m
+
+# Clean up
+clean:
+	$(info CLEAN $(NAME))
+	rm -f $(NAME).elf $(NAME).hex $(OBJ) $(DEP)
+
+.PHONY: all flash clean
+
+# Be verbose if V is set
+$V.SILENT:
