@@ -10,6 +10,8 @@ MCU = atmega4809
 
 # CPU frequency
 F_CPU = 20000000L
+# Frequency when divider is left by default
+# F_CPU = 3333333L
 
 # Programmer type
 PROGRAMMER_TYPE = jtag2updi
@@ -18,7 +20,7 @@ PROGRAMMER_TYPE = jtag2updi
 PROGRAMMER_PORT = /dev/ttyACM0
 
 # AVR-GCC Flags
-CFLAGS = -mmcu=$(MCU) -ffunction-sections -fdata-sections -DF_CPU=$(F_CPU) -O2 -MMD -MP -nodevicelib -flto -Wall
+CFLAGS = -mmcu=$(MCU) -ffunction-sections -fdata-sections -DF_CPU=$(F_CPU) -Os -MMD -MP -nodevicelib -flto -Wall
 
 PREFIX = /opt/avr8-gnu-toolchain-linux_x86_64/bin/
 
