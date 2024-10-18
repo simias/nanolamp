@@ -86,6 +86,23 @@ static uint16_t adc_read(void) {
     return ADC0.RES >> 6;
 }
 
+static void pwm_init(void) {
+    /* Use PB0 */
+    PORTB.DIR |= PIN0_bm;
+    PORTMUX.TCAROUTEA |= PORTMUX_TCA0_PORTB_gc;
+
+    /* Period */
+    TCA0.SINGLE.PER = 0xFF;
+
+    /* Duty cycle */
+    TCA0.SINGLE.CMP0 = 0x10;
+
+    /* Set divider */
+    TCA0.SINGLE.CTRLA = TCA_SINGLE_CLKSEL_DIV256_gc | TCA_SINGLE_ENABLE_bm;
+
+    TCA0.SINGLE.CTRLB = TCA_SINGLE_CMP0EN_bm | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
+}
+
 int main(void) {
     cli();
 
@@ -99,10 +116,15 @@ int main(void) {
 
     adc_init();
 
+    pwm_init();
+
     for (;;) {
+        /* We get a value in the range 0;1023 */
         uint16_t v = adc_read();
-        printf("ADC read: 0x%x %u\n", v, v);
-        _delay_ms(500);
+
+        TCA0.SINGLE.CMP0 = v >> 2;
+
+        _delay_ms(100);
     }
 
     return 0;
