@@ -1,4 +1,4 @@
-NAME = nanomlamp
+NAME = nanolamp
 
 SRC = main.c
 

@@ -1,130 +1,256 @@
 #include <avr/io.h>
+#include <avr/wdt.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 #include <util/delay.h>
 #include <stdbool.h>
-#include <stdio.h>
 
 #define ARRAY_SIZE(_arr) (sizeof(_arr) / sizeof((_arr)[0]))
 
-#define BAUD_RATE 9600UL
-#define USART_BAUD_RATE(_br) ((F_CPU * 4 + (_br) / 2) / (_br))
+struct led_color {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+};
 
-static int uart_putchar(int c) {
-    while (!(USART3.STATUS & USART_DREIF_bm)) {
-        ;
+#define NLEDS 36U
+
+static struct led_color leds[NLEDS];
+
+/* LED color as sent on the SPI. We need 6 bits per color bit */
+static uint8_t led_spi_encoded[NLEDS * 3 * 6];
+
+static void led_spi_set_bit(uint16_t bitpos, uint8_t b) {
+    uint16_t byte = bitpos >> 3;
+    unsigned shift = bitpos & 7;
+
+    b = !!b;
+
+    led_spi_encoded[byte] |= b << shift;
+}
+
+ISR(PORTB_PORT_vect) {
+    /* ACK */
+    PORTB.INTFLAGS = PORT_INT0_bm;
+}
+
+static uint8_t switch_state = 0;
+
+static bool switch_toggled(void) {
+    uint8_t ss = (PORTB.IN & (1U << PIN0_bp));
+
+    if (ss != switch_state) {
+        switch_state = ss;
+        return true;
     }
 
-    USART3.TXDATAL = c;
-
-    return c;
+    return false;
 }
 
-static int uart_putchar_stream(char c, FILE *stream) {
-    if (c == '\n') {
-        uart_putchar('\r');
+static void spi_init(void) {
+    PORTMUX.TWISPIROUTEA &= ~PORTMUX_SPI0_gm;
+    PORTMUX.TWISPIROUTEA |= PORTMUX_SPI0_1_bm;
+
+    /* Set MOSI pin direction to output */
+    PORTE.DIR |= PIN0_bm;
+
+    /* Set Clock as an output (this is also the built-in LED) */
+    PORTE.DIR |= PIN2_bm;
+
+
+    SPI0.CTRLA = SPI_DORD_bm            /* LSB is transmitted first */
+               | SPI_ENABLE_bm          /* Enable module */
+               | SPI_MASTER_bm          /* SPI module in Master mode */
+               | SPI_PRESC_DIV4_gc;     /* System Clock divided by 4 */
+
+    /* Enable double buffering and MODE0 */
+    SPI0.CTRLB = SPI_BUFEN_bm | SPI_MODE_0_bm;
+}
+
+static void spi_send_encoded() {
+    /* We need at least 50us of zero to reset */
+    for (unsigned i = 0; i < 15; i++) {
+        while (!(SPI0.INTFLAGS & SPI_DREIF_bm)) {};
+        SPI0.DATA = 0;
     }
 
-    return uart_putchar(c);
-}
-
-static FILE uart_stream = FDEV_SETUP_STREAM(uart_putchar_stream, NULL, _FDEV_SETUP_WRITE);
-
-static void uart_init(void) {
-    USART3.BAUD = USART_BAUD_RATE(BAUD_RATE);
-    USART3.CTRLB = USART_TXEN_bm;
-
-    /* Sent USART 3 on PB[5:4] */
-    PORTMUX.USARTROUTEA |= PORTMUX_USART3_ALT1_gc;
-
-    /* PIN 4 TX*/
-    PORTB.DIR |= PIN4_bm;
-
-    stdout = &uart_stream;
-}
-
-
-static void adc_init(void)
-{
-    /* PD5 input*/
-    /* PORTD.DIR &= ~PIN5_bm; */
-
-    /* Disable digital input buffer */
-    PORTD.PIN5CTRL &= ~PORT_ISC_gm;
-    PORTD.PIN5CTRL |= PORT_ISC_INPUT_DISABLE_gc;
-
-    /* Disable pull-up resistor */
-    PORTD.PIN5CTRL &= ~PORT_PULLUPEN_bm;
-
-    /* Clock divider must be selected so that we don't overclock the ADC. In
-     * 10bits according the the datasheet the freq should be between 200 and
-     * 1500kHz (200 - 2000kHz in 8bits)
-     */
-    ADC0.CTRLC = ADC_PRESC_DIV64_gc
-               | ADC_REFSEL_VDDREF_gc;
-
-    ADC0.CTRLA = ADC_ENABLE_bm          /* ADC Enable: enabled */
-               | ADC_RESSEL_10BIT_gc;   /* 10-bit mode */
-
-    /* Select ADC channel */
-    ADC0.MUXPOS  = ADC_MUXPOS_AIN5_gc;
-
-    /* Acculumate 64 samples because why not */
-    ADC0.CTRLB = ADC_SAMPNUM_ACC64_gc;
-
-}
-
-static uint16_t adc_read(void) {
-    ADC0.COMMAND = ADC_STCONV_bm;
-
-    while (!(ADC0.INTFLAGS & ADC_RESRDY_bm)) {
-        ;
+    for (unsigned i = 0; i < ARRAY_SIZE(led_spi_encoded); i++) {
+        /* Wait for data register empty */
+        while (!(SPI0.INTFLAGS & SPI_DREIF_bm)) {};
+        /* SPI0.DATA = led_spi_encoded[i] | 0xff; */
+        SPI0.DATA = led_spi_encoded[i];
     }
-    ADC0.INTFLAGS = ADC_RESRDY_bm;
-
-    /* Divide by 64 since we accumulate 64 samples */
-    return ADC0.RES >> 6;
 }
 
-static void pwm_init(void) {
-    /* Use PB0 */
-    PORTB.DIR |= PIN0_bm;
-    PORTMUX.TCAROUTEA |= PORTMUX_TCA0_PORTB_gc;
+static void spi_send_leds() {
+    /* We need to output the LEDs very fast and without interruption since the
+     * protocol uses fixed timings to detect ones and zeroes (it's not real
+     * SPI). This chip is not fast enough to do both the encoding and sending at
+     * the same time without breaks between bytes, so we need to precompute
+     * everything. */
+    uint16_t bitpos = 0;
 
-    /* Period */
-    TCA0.SINGLE.PER = 0xFF;
+    wdt_reset();
+    for (unsigned i = 0; i < ARRAY_SIZE(led_spi_encoded); i++) {
+        led_spi_encoded[i] = 0x00;
+    }
 
-    /* Duty cycle */
-    TCA0.SINGLE.CMP0 = 0x10;
+    for (unsigned led = 0; led < NLEDS; led++) {
+        uint32_t c = 0;
+        c |= leds[led].g;
+        c <<= 8;
+        c |= leds[led].r;
+        c <<= 8;
+        c |= leds[led].b;
 
-    /* Set divider */
-    TCA0.SINGLE.CTRLA = TCA_SINGLE_CLKSEL_DIV256_gc | TCA_SINGLE_ENABLE_bm;
+        for (unsigned b = 0; b < 24; b++) {
+            unsigned high = (c >> (23 - b)) & 1;
 
-    TCA0.SINGLE.CTRLB = TCA_SINGLE_CMP0EN_bm | TCA_SINGLE_WGMODE_SINGLESLOPE_gc;
+            /* It's hard to get clean timing with the Atmel because the SPI
+             * tends to insert small pauses between bytes which mess the timings
+             * up. Theoretically we could do with only 3 bit per LED bit: 100 or
+             * 110, but it doesn't work well in my experiments.
+             *
+             * Instead I double the SPI clock and do this: 100000 for 0, 111100
+             * for 1. That means that the 0 pulses are a bit below spec */
+            led_spi_set_bit(bitpos++, 1);
+            led_spi_set_bit(bitpos++, high);
+            led_spi_set_bit(bitpos++, high);
+            led_spi_set_bit(bitpos++, high);
+            led_spi_set_bit(bitpos++, 0);
+            led_spi_set_bit(bitpos++, 0);
+        }
+    }
+
+    spi_send_encoded();
 }
+
+#define ANIMATION_DELAY 0
+
+static void mode_off(void) {
+    for (unsigned i = 0; i < NLEDS; i++) {
+        leds[i].r = 0;
+        leds[i].g = 0;
+        leds[i].b = 0;
+        spi_send_leds();
+        _delay_ms(ANIMATION_DELAY);
+    }
+}
+
+#define FULL_RED   250
+#define FULL_GREEN 75
+#define FULL_BLUE  10
+
+static void mode_full_power(void) {
+    for (unsigned i = 0; i < NLEDS; i++) {
+        leds[i].r = FULL_RED;
+        leds[i].g = FULL_GREEN;
+        leds[i].b = FULL_BLUE;
+        spi_send_leds();
+        _delay_ms(ANIMATION_DELAY);
+    }
+}
+
+static void mode_mid_power(void) {
+    for (unsigned i = 0; i < NLEDS; i++) {
+        leds[i].r = FULL_RED / 3;
+        leds[i].g = FULL_GREEN / 3;
+        leds[i].b = FULL_BLUE / 3;
+        spi_send_leds();
+        _delay_ms(ANIMATION_DELAY);
+    }
+}
+
+static void mode_orange(void) {
+    for (unsigned i = 0; i < NLEDS; i++) {
+        leds[i].r = 220;
+        leds[i].g = 30;
+        leds[i].b = 0;
+        spi_send_leds();
+        _delay_ms(ANIMATION_DELAY);
+    }
+}
+
+static void mode_red(void) {
+    for (unsigned i = 0; i < NLEDS; i++) {
+        leds[i].r = FULL_RED;
+        leds[i].g = 0;
+        leds[i].b = 0;
+        spi_send_leds();
+        _delay_ms(ANIMATION_DELAY);
+    }
+}
+
+static void mode_red_low_power(void) {
+    for (unsigned i = 0; i < NLEDS; i++) {
+        leds[i].r = FULL_RED / 8;
+        leds[i].g = 0;
+        leds[i].b = 0;
+        spi_send_leds();
+        _delay_ms(ANIMATION_DELAY);
+    }
+}
+typedef void (*mode_handled_t)(void);
+
+static mode_handled_t mode_handlers[] = {
+    mode_off,
+    mode_full_power,
+    mode_mid_power,
+    mode_orange,
+    mode_red,
+    mode_red_low_power,
+};
 
 int main(void) {
+    unsigned mode= 0;
+
     cli();
 
-    /* Disable divider to run at full 20MHz, otherwise the default value is
-     * 0b1001 which is equal to /6 or 3.333MHz.
-     * https://onlinedocs.microchip.com/oxy/GUID-8109B192-2AF1-4902-BA7D-C3C6DA7BDC69-en-US-3/GUID-205EC738-D303-46E3-AAD4-5F1FB6C357A1.html */
+    /* Disable divider to run at full 20MHz */
     _PROTECTED_WRITE(CLKCTRL_MCLKCTRLB, 0x00);
 
-    uart_init();
-    puts("Starting up...");
+    wdt_enable(WDTO_1S);
 
-    adc_init();
+    /* rtc_init(); */
+    set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+    sleep_enable();
 
-    pwm_init();
+    spi_init();
 
-    for (;;) {
-        /* We get a value in the range 0;1023 */
-        uint16_t v = adc_read();
+    /* Use PB0 (D9) as switch input with a pull up */
+    PORTB.DIR &= ~(1U << PIN0_bp);
+    /* Activate Pull-up + IRQ */
+    PORTB.PIN0CTRL = PORT_PULLUPEN_bm | PORT_ISC_BOTHEDGES_gc;
 
-        TCA0.SINGLE.CMP0 = v >> 2;
+    switch_toggled();
 
-        _delay_ms(100);
+    for (unsigned i = 0; i < NLEDS; i+=3) {
+        leds[i].r = 0x0;
+        leds[i].g = 0x0;
+        leds[i].b = 0x0;
+    }
+
+    spi_send_leds();
+
+    while (1) {
+        /* Wait for switch activity */
+        wdt_disable();
+        sei();
+        sleep_cpu();
+        cli();
+        wdt_enable(WDTO_1S);
+
+        /* Debounce delay */
+        _delay_ms(20);
+
+        if (!switch_toggled()) {
+            /* Spurious switch activity, ignore */
+            continue;
+        }
+
+        mode = (mode + 1) % ARRAY_SIZE(mode_handlers);
+
+        mode_handlers[mode]();
     }
 
     return 0;
