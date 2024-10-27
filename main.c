@@ -1,4 +1,5 @@
 #include <avr/io.h>
+#include <avr/wdt.h>
 #include <avr/interrupt.h>
 #include <avr/sleep.h>
 #include <util/delay.h>
@@ -433,18 +434,23 @@ int main(void) {
      * https://onlinedocs.microchip.com/oxy/GUID-8109B192-2AF1-4902-BA7D-C3C6DA7BDC69-en-US-3/GUID-205EC738-D303-46E3-AAD4-5F1FB6C357A1.html */
     _PROTECTED_WRITE(CLKCTRL_MCLKCTRLB, 0x00);
 
+    wdt_enable(WDTO_1S);
+
     uart_init();
     puts("Starting up...");
 
     adc_init();
 
     spi_init();
+
     spi_send_leds();
+
+    puts("Main loop");
 
     for (;;) {
         /* We get a value in the range 0;1023 that we downscale to 8bit */
-        uint16_t intensity = adc_read(ADC_MUXPOS_AIN5_gc) >> 2;
-        uint16_t hue = adc_read(ADC_MUXPOS_AIN4_gc);
+        uint16_t intensity = adc_read(ADC_MUXPOS_AIN4_gc) >> 2;
+        uint16_t hue = adc_read(ADC_MUXPOS_AIN5_gc);
         struct led_color prev_stop;
         struct led_color next_stop;
         uint16_t r;
@@ -455,6 +461,8 @@ int main(void) {
         unsigned i;
         uint16_t dither = 0;
 
+        wdt_reset();
+
         if (intensity == cur_intensity && (hue >> 2) == cur_hue) {
             _delay_ms(100);
             continue;
@@ -464,7 +472,7 @@ int main(void) {
         /* Offset between steps in 1/256th*/
         stop_off = ((hue * (ARRAY_SIZE(led_stops) - 1)) % 1024) >> 2;
 
-        /* printf("%u %u %u.%u\n", intensity, hue, stop, stop_off); */
+        printf("%u %u %u.%u\n", intensity, hue, stop, stop_off);
 
         prev_stop = led_stops[stop];
         next_stop = led_stops[stop + 1];
