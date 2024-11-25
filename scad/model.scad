@@ -1,4 +1,4 @@
-$fn = 100;
+$fn = 50;
 
 union() {
 	difference() {
@@ -37,10 +37,20 @@ union() {
 				union() {
 					cube(size = [61.0, 11.0, 8]);
 					translate(v = [0, 0, -25]) {
-						cube(size = [11.0, 11.0, 30]);
+						translate(v = [1, 1, 1]) {
+							minkowski() {
+								cube(size = [9.0, 9.0, 28]);
+								sphere(r = 1);
+							}
+						}
 					}
-					translate(v = [51.0, 0, -25]) {
-						cube(size = [11.0, 11.0, 30]);
+					translate(v = [50, 0, -25]) {
+						translate(v = [1, 1, 1]) {
+							minkowski() {
+								cube(size = [9.0, 9.0, 28]);
+								sphere(r = 1);
+							}
+						}
 					}
 					#translate(v = [0.5, 0.5, 0.5]) {
 						cube(size = [60, 10, 8.5]);

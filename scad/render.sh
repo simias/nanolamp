@@ -1,5 +1,9 @@
 #!/bin/sh
 
+cd $(dirname $0)
+
+. ./venv/bin/activate
+
 python model.py
 
 openscad model.scad &

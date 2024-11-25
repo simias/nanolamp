@@ -1,8 +1,8 @@
 # import openscad
-from solid2 import cube, text, cylinder, set_global_fn
+from solid2 import cube, text, cylinder, sphere, set_global_fn, minkowski
 
 # set the number of faces for curved shapes
-set_global_fn(100)
+set_global_fn(50)
 
 brick_c = 190
 brick_thickness = 81
@@ -10,6 +10,11 @@ slot_depth = 10
 lip_thickness = 10
 base_w = 135
 base_h = 55
+
+def rounded_box(w, h, d, r):
+    c = cube(w - 2 * r, h - 2 * r, d - 2 * r)
+    box = minkowski()(c, sphere(r))
+    return box.translate(r, r, r)
 
 base = cube(brick_thickness + 2 * lip_thickness, base_w, base_h)
 
@@ -65,8 +70,9 @@ slide_d = 7
 slide_m = 0.5
 
 slide = cube(slide_w + slide_m * 2, slide_h + slide_m * 2, slide_d + 1)
-slide += cube(slide_h + slide_m * 2, slide_h + slide_m * 2, 30).translate(0, 0, -25)
-slide += cube(slide_h + slide_m * 2, slide_h + slide_m * 2, 30).translate(slide_w - slide_h + slide_m *2, 0, -25)
+prong = rounded_box(slide_h + slide_m * 2, slide_h + slide_m * 2, 30, 1)
+slide += prong.translate(0, 0, -25)
+slide += prong.translate(slide_w - slide_h, 0, -25)
 slide += cube(slide_w, slide_h, slide_d + 1+ slide_m).translate(slide_m, slide_m,
                                                    slide_m).debug()
 slide += cube(5, 1, 15).translate(20, slide_m + slide_h / 2 - 0.5, slide_d).debug()
